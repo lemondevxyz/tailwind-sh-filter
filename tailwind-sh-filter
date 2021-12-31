@@ -1,0 +1,64 @@
+#!/bin/sh
+# remove tabs, comments, doctype, and end tags
+file=""
+while read line; do file="$file$line"; done
+file="$(echo "$file" | sed -e 's/>/>\n/g' | sed -e 's/[\t ]*//' | sed -e 's/<!.*>//' | sed -e 's/<\/.*>//')"
+# collect all tags
+tags="$(echo "$file" \
+ 	| awk '{ print $1 }' \
+		| sed -e 's/^[^<].*//' \
+		| sed -e 's/[<]//' \
+		| sed -e 's/>.*//' \
+		| tr '\n' ' ' | xargs -n1 | sort -u | xargs)"
+# collect all attr values
+attr_values() {
+	attr="$attr="
+	echo "$file" \
+		| sed -e 's/<.[^ ]*?>//' \
+		| sed -e 's/<.[^ ]*//' \
+		| sed -e 's/\" /"\n/' \
+		| sed -e 's/[>\t ]//' \
+		| awk '{ if(length($0) > 0) print $0 }' \
+		| awk "{ if(match(\$1, \"^$attr\")) print \$0 }" \
+		| sed -e "s/$attr//g" \
+		| sed -e 's/"//g' \
+		| sed -e 's/>//g' | sed -e 's/\n//g' \
+		| xargs -n1 | sort -u | xargs
+}
+attr="class"
+class="$(attr_values)"
+attr="id"
+id="$(attr_values)"
+# characters that need escaping
+characters_escaping=""
+# to_regex returns a string that matches each (class|id|tag)'s rule. only matches rules that are exclusive to the (class|id|tag)
+# needs variables: prefix, data
+# returns variables: data
+to_regex() {
+	if [ "$prefix" = "." ]; then prefix='\\\\.'; fi
+	data="$(echo $data | sed -e 's/:/.:/g' | sed -e "s/ /([:].*)?{|^$prefix/g" | sed -e 's/\//\\\\\//g')"
+	if [ ! -z "$data" ]; then
+		if [ "$prefix" = '\\\\.' ]; then prefix='\\.'; fi
+		data="^$prefix$data([:].*)?{"
+	fi
+}
+
+prefix=""
+data="$tags"
+to_regex
+all_rules="$data"
+prefix="."
+data="$class"
+to_regex
+if [ ! -z "$data" ]; then data="|$data"; fi
+all_rules="$all_rules$data"
+prefix="#"
+data="$id"
+to_regex
+if [ ! -z "$data" ]; then data="|$data"; fi
+all_rules="$all_rules$data";
+# filter out unused css
+cat "$@" | tr -d '\n' \
+	| sed 's/}/}\n/g' \
+	| sed 's/\/\*.*\/\*//g' \
+ | gawk "{ if(match(\$1, \"$all_rules\")) print \$0 }" | tr -d '\n'
